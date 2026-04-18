@@ -28,14 +28,25 @@ export class TwilioWhatsAppChannel {
         this.fromNumber = process.env.TWILIO_WHATSAPP_FROM || '';
         this.webhookUrl = process.env.TWILIO_WEBHOOK_URL || '';
 
+        if (!this.accountSid || !this.authToken || !this.fromNumber || !this.webhookUrl) {
+            throw new Error("Missing required Twilio environment variables. Ensure TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_FROM, and TWILIO_WEBHOOK_URL are set.");
+        }
+
+        if (!process.env.OPENCLAW_ALLOWED_SENDERS) {
+            throw new Error("OPENCLAW_ALLOWED_SENDERS environment variable is missing.");
+        }
+
         let allowedSendersList: string[] = [];
         try {
-            if (process.env.OPENCLAW_ALLOWED_SENDERS) {
-                allowedSendersList = JSON.parse(process.env.OPENCLAW_ALLOWED_SENDERS);
-            }
+            allowedSendersList = JSON.parse(process.env.OPENCLAW_ALLOWED_SENDERS);
         } catch (e) {
-            this.api.logger.error("Failed to parse OPENCLAW_ALLOWED_SENDERS", e);
+            throw new Error("Failed to parse OPENCLAW_ALLOWED_SENDERS. It must be a valid JSON array of strings.");
         }
+
+        if (!Array.isArray(allowedSendersList) || allowedSendersList.length === 0) {
+            throw new Error("OPENCLAW_ALLOWED_SENDERS must be a non-empty array of sender phone numbers.");
+        }
+
         this.allowedSenders = new Set(allowedSendersList);
 
         this.client = twilio(this.accountSid, this.authToken);
