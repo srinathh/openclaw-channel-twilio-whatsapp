@@ -3,6 +3,7 @@ import path from 'path';
 import crypto from 'crypto';
 import https from 'https';
 import twilio from 'twilio';
+import mime from 'mime-types';
 
 // Use type `any` for the OpenClaw api parameter to bypass strict types while conforming to the requested schema.
 export class TwilioWhatsAppChannel {
@@ -234,18 +235,8 @@ export class TwilioWhatsAppChannel {
             return;
         }
 
-        const mimeTypes: Record<string, string> = {
-            '.jpg': 'image/jpeg',
-            '.jpeg': 'image/jpeg',
-            '.png': 'image/png',
-            '.gif': 'image/gif',
-            '.webp': 'image/webp',
-            '.mp4': 'video/mp4',
-            '.mp3': 'audio/mpeg',
-            '.pdf': 'application/pdf'
-        };
-        const ext = path.extname(filePath).toLowerCase();
-        res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'application/octet-stream' });
+        const contentType = mime.lookup(filePath) || 'application/octet-stream';
+        res.writeHead(200, { 'Content-Type': contentType });
         fs.createReadStream(filePath).pipe(res);
     }
 
@@ -282,15 +273,7 @@ export class TwilioWhatsAppChannel {
     }
 
     private getExtensionForType(contentType: string): string {
-        const map: Record<string, string> = {
-            'image/jpeg': '.jpg',
-            'image/png': '.png',
-            'image/gif': '.gif',
-            'image/webp': '.webp',
-            'video/mp4': '.mp4',
-            'audio/mpeg': '.mp3',
-            'application/pdf': '.pdf',
-        };
-        return map[contentType] || '.bin';
+        const ext = mime.extension(contentType);
+        return ext ? `.${ext}` : '.bin';
     }
 }

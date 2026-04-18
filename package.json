@@ -22,10 +22,12 @@
     "build": "tsc"
   },
   "dependencies": {
+    "mime-types": "^3.0.2",
     "twilio": "^5.0.0"
   },
   "devDependencies": {
-    "typescript": "^5.0.0",
-    "@types/node": "^20.0.0"
+    "@types/mime-types": "^3.0.1",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
   }
 }
