@@ -1,0 +1,22 @@
+{
+  "name": "@srinathh/openclaw-channel-twilio-whatsapp",
+  "version": "1.0.0",
+  "license": "Apache-2.0",
+  "description": "Twilio WhatsApp channel plugin for OpenClaw",
+  "type": "module",
+  "main": "dist/index.js",
+  "openclaw": {
+    "type": "channel",
+    "name": "twilio-whatsapp"
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "twilio": "^5.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0"
+  }
+}
