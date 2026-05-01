@@ -1,6 +1,6 @@
 {
   "name": "@srinathh/openclaw-channel-twilio-whatsapp",
-  "version": "2.0.7",
+  "version": "2.0.8",
   "license": "Apache-2.0",
   "description": "Twilio WhatsApp channel plugin for OpenClaw",
   "author": "srinathh",
@@ -18,11 +18,32 @@
     "extensions": [
       "./dist/index.js"
     ],
+    "channel": {
+      "id": "twilio-whatsapp",
+      "label": "Twilio WhatsApp",
+      "selectionLabel": "WhatsApp (Twilio Business API)",
+      "blurb": "WhatsApp channel via Twilio Business API — official, compliant, with delivery receipts.",
+      "docsPath": "https://github.com/srinathh/openclaw-channel-twilio-whatsapp#readme",
+      "markdownCapable": true,
+      "exposure": {
+        "configured": true,
+        "setup": true,
+        "docs": true
+      },
+      "quickstartAllowFrom": true
+    },
     "install": {
+      "npmSpec": "@srinathh/openclaw-channel-twilio-whatsapp@latest",
+      "defaultChoice": "npm",
       "minHostVersion": ">=2026.3.28"
     },
     "compat": {
-      "pluginApi": ">=2026.3.28"
+      "pluginApi": ">=2026.3.28",
+      "minGatewayVersion": "2026.3.28"
+    },
+    "build": {
+      "openclawVersion": "2026.4.29",
+      "pluginSdkVersion": "2026.4.29"
     },
     "release": {
       "publishToClawHub": true,
