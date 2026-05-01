@@ -151,6 +151,7 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
             rawBody: msg.text,
             senderAddress: msg.senderId,
             recipientAddress: toWhatsAppId(fromNumber),
+            originatingTo: toWhatsAppId(msg.senderId),
             senderId: msg.senderId,
             messageId: msg.messageSid,
             provider: 'twilio-whatsapp',
