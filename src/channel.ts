@@ -1,279 +1,231 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
-import crypto from 'crypto';
-import https from 'https';
 import twilio from 'twilio';
-import mime from 'mime-types';
+import { createChatChannelPlugin } from 'openclaw/plugin-sdk/channel-core';
+import { createRestrictSendersChannelSecurity } from 'openclaw/plugin-sdk/channel-policy';
+import { createAttachedChannelResultAdapter } from 'openclaw/plugin-sdk/channel-send-result';
+import { chunkText } from 'openclaw/plugin-sdk/reply-chunking';
+import { toWhatsAppId, fromWhatsAppId } from './util.js';
+import { stageMedia, createMediaServeHandler } from './media.js';
+import { createWebhookHandler, createHealthHandler, type InboundMessage } from './webhook.js';
 
-// Use type `any` for the OpenClaw api parameter to bypass strict types while conforming to the requested schema.
-export class TwilioWhatsAppChannel {
-    private api: any;
-    private client: twilio.Twilio;
-    private accountSid: string;
-    private authToken: string;
-    private fromNumber: string;
-    private webhookUrl: string;
-    private allowedSenders: Set<string>;
-    private outboundDir: string;
-    private inboundDir: string;
+const TWILIO_MAX_MESSAGE_LEN = 1600;
 
-    // The max chars per twilio message is 1600.
-    private MAX_MESSAGE_LENGTH = 1600;
-
-    constructor(api: any) {
-        this.api = api;
-
-        // Load configuration from env, possibly injected via operator Secrets
-        this.accountSid = process.env.TWILIO_ACCOUNT_SID || '';
-        this.authToken = process.env.TWILIO_AUTH_TOKEN || '';
-        this.fromNumber = process.env.TWILIO_WHATSAPP_FROM || '';
-        this.webhookUrl = process.env.TWILIO_WEBHOOK_URL || '';
-
-        if (!this.accountSid || !this.authToken || !this.fromNumber || !this.webhookUrl) {
-            throw new Error("Missing required Twilio environment variables. Ensure TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_FROM, and TWILIO_WEBHOOK_URL are set.");
-        }
-
-        if (!process.env.OPENCLAW_ALLOWED_SENDERS) {
-            throw new Error("OPENCLAW_ALLOWED_SENDERS environment variable is missing.");
-        }
-
-        let allowedSendersList: string[] = [];
-        try {
-            allowedSendersList = JSON.parse(process.env.OPENCLAW_ALLOWED_SENDERS);
-        } catch (e) {
-            throw new Error("Failed to parse OPENCLAW_ALLOWED_SENDERS. It must be a valid JSON array of strings.");
-        }
-
-        if (!Array.isArray(allowedSendersList) || allowedSendersList.length === 0) {
-            throw new Error("OPENCLAW_ALLOWED_SENDERS must be a non-empty array of sender phone numbers.");
-        }
-
-        this.allowedSenders = new Set(allowedSendersList);
-
-        this.client = twilio(this.accountSid, this.authToken);
-
-        const appDir = process.env.OPENCLAW_DATA_DIR || '/srv/openclaw/data';
-
-        this.outboundDir = path.join(appDir, 'media', 'outbound');
-        this.inboundDir = path.join(appDir, 'media', 'inbound');
-
-        fs.mkdirSync(this.outboundDir, { recursive: true });
-        fs.mkdirSync(this.inboundDir, { recursive: true });
-
-        // Register routes through OpenClaw API
-        this.api.registerHttpRoute('POST', '/webhook/twilio-whatsapp', this.handleWebhook.bind(this));
-        this.api.registerHttpRoute('GET', '/webhook/twilio-whatsapp/media/:filename', this.serveMedia.bind(this));
-    }
-
-    // Exposed properties OpenClaw might expect on the object
-    get name() {
-        return 'twilio-whatsapp';
-    }
-
-    // Note: the exact method signature here depends on OpenClaw's sdk expectations
-    // but plan specifies: "Outbound send(to, text, mediaUrls)"
-    async send(to: string, text: string, mediaFiles?: string[]): Promise<void> {
-        try {
-            const mediaUrls: string[] = [];
-            if (mediaFiles && mediaFiles.length > 0) {
-                for (const file of mediaFiles) {
-                    const url = this.stageMedia(file);
-                    if (url) {
-                        mediaUrls.push(url);
-                    }
-                }
-            }
-
-            let cleanText = text || '📷';
-
-            const msgOpts: any = {
-                from: this.fromNumber,
-                to,
-                body: cleanText,
-            };
-
-            if (mediaUrls.length > 0) {
-                msgOpts.mediaUrl = mediaUrls.slice(0, 10);
-            }
-
-            if (cleanText.length <= this.MAX_MESSAGE_LENGTH) {
-                await this.client.messages.create(msgOpts);
-            } else {
-                const firstChunk = cleanText.slice(0, this.MAX_MESSAGE_LENGTH);
-                await this.client.messages.create({ ...msgOpts, body: firstChunk });
-                for (
-                    let i = this.MAX_MESSAGE_LENGTH;
-                    i < cleanText.length;
-                    i += this.MAX_MESSAGE_LENGTH
-                ) {
-                    await this.client.messages.create({
-                        from: this.fromNumber,
-                        to,
-                        body: cleanText.slice(i, i + this.MAX_MESSAGE_LENGTH),
-                    });
-                }
-            }
-        } catch (err) {
-            if (typeof this.api.logger !== 'undefined') {
-                this.api.logger.error({ to, err }, 'Failed to send Twilio WhatsApp message');
-            } else {
-                console.error('Failed to send Twilio WhatsApp message', err);
-            }
-        }
-    }
-
-    private stageMedia(localPath: string): string | null {
-        const srcPath = path.resolve(localPath);
-        if (!fs.existsSync(srcPath) || !fs.statSync(srcPath).isFile()) {
-            return null;
-        }
-        if (path.dirname(srcPath) === path.resolve(this.outboundDir)) {
-            return `${this.webhookUrl}/webhook/twilio-whatsapp/media/${path.basename(srcPath)}`;
-        }
-        const ext = path.extname(srcPath);
-        const filename = `${crypto.randomUUID().replace(/-/g, '')}${ext}`;
-        const destPath = path.join(this.outboundDir, filename);
-        fs.copyFileSync(srcPath, destPath);
-        return `${this.webhookUrl}/webhook/twilio-whatsapp/media/${filename}`;
-    }
-
-    // Required arguments to HTTP handlers depends on framework
-    // It handles Node.js request/response for this implementation
-    private async handleWebhook(req: any, res: any) {
-        const chunks: Buffer[] = [];
-        req.on('data', (chunk: Buffer) => chunks.push(chunk));
-
-        req.on('end', async () => {
-            try {
-                const body = Buffer.concat(chunks);
-                const params = this.parseFormBody(body);
-
-                if (this.webhookUrl) {
-                    const signature = req.headers['x-twilio-signature'] as string;
-                    const valid = twilio.validateRequest(
-                        this.authToken,
-                        signature || '',
-                        this.webhookUrl + '/webhook/twilio-whatsapp',
-                        params,
-                    );
-                    if (!valid) {
-                        res.writeHead(403);
-                        res.end('Invalid signature');
-                        return;
-                    }
-                }
-
-                const from = params.From || '';
-                if (!from || (this.allowedSenders.size > 0 && !this.allowedSenders.has(from))) {
-                    res.writeHead(403);
-                    res.end('Forbidden');
-                    return;
-                }
-
-                const messageSid = params.MessageSid || '';
-                const bodyText = params.Body || '';
-                const numMedia = parseInt(params.NumMedia || '0', 10);
-
-                let content = bodyText;
-                if (numMedia > 0) {
-                    content += '\n';
-                    for (let i = 0; i < numMedia; i++) {
-                        const mediaUrl = params[`MediaUrl${i}`];
-                        const contentType = params[`MediaContentType${i}`] || 'unknown';
-                        if (mediaUrl) {
-                            try {
-                                const buffer = await this.downloadTwilioMedia(mediaUrl);
-                                // Need an extension based on content type, but Twilio usually 
-                                // provides no clear extension, mapping could be exhaustive. 
-                                // Here, we grab .jpg for image/jpeg etc
-                                const ext = this.getExtensionForType(contentType);
-                                const filePath = path.join(this.inboundDir, `${messageSid}-${i}${ext}`);
-                                fs.writeFileSync(filePath, buffer);
-                                content += `[${contentType}: ${filePath}]\n`;
-                            } catch (err) {
-                                content += `[Media: ${contentType} (download failed)]\n`;
-                            }
-                        }
-                    }
-                }
-
-                // Pass info to OpenClaw
-                if (this.api && typeof this.api.handleInboundMessage === 'function') {
-                    this.api.handleInboundMessage({ from, text: content.trim(), messageId: messageSid });
-                }
-
-                res.writeHead(200, { 'Content-Type': 'text/xml' });
-                res.end('<Response/>');
-            } catch (e) {
-                res.writeHead(500);
-                res.end('Internal Server Error');
-            }
-        });
-    }
-
-    private serveMedia(req: any, res: any) {
-        // Expected to have req.params.filename via route registration (Express-style)
-        // Or just parse URL if plain http
-        let filename = req.params?.filename;
-
-        // Fallback if SDK doesn't inject req.params
-        if (!filename) {
-            const parts = req.url.split('/');
-            filename = parts[parts.length - 1];
-        }
-
-        if (!filename) {
-            res.writeHead(404);
-            res.end('Not found');
-            return;
-        }
-
-        const filePath = path.resolve(this.outboundDir, filename);
-        if (path.dirname(filePath) !== path.resolve(this.outboundDir) || !fs.existsSync(filePath)) {
-            res.writeHead(404);
-            res.end('Not found');
-            return;
-        }
-
-        const contentType = mime.lookup(filePath) || 'application/octet-stream';
-        res.writeHead(200, { 'Content-Type': contentType });
-        fs.createReadStream(filePath).pipe(res);
-    }
-
-    private parseFormBody(body: Buffer): Record<string, string> {
-        const params = new URLSearchParams(body.toString('utf-8'));
-        const result: Record<string, string> = {};
-        for (const [key, value] of params) {
-            result[key] = value;
-        }
-        return result;
-    }
-
-    private downloadTwilioMedia(url: string): Promise<Buffer> {
-        return new Promise((resolve, reject) => {
-            const auth = `${this.accountSid}:${this.authToken}`;
-            const get = (targetUrl: string) => {
-                https.get(targetUrl, { auth }, (res) => {
-                    if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-                        get(res.headers.location);
-                        return;
-                    }
-                    if (res.statusCode && res.statusCode >= 400) {
-                        reject(new Error(`HTTP ${res.statusCode}`));
-                        return;
-                    }
-                    const chunks: Buffer[] = [];
-                    res.on('data', (chunk: Buffer) => chunks.push(chunk));
-                    res.on('end', () => resolve(Buffer.concat(chunks)));
-                    res.on('error', reject);
-                });
-            };
-            get(url);
-        });
-    }
-
-    private getExtensionForType(contentType: string): string {
-        const ext = mime.extension(contentType);
-        return ext ? `.${ext}` : '.bin';
-    }
+interface TwilioWhatsAppConfig {
+  enabled: boolean;
+  dmPolicy: 'allowlist' | 'open';
+  allowFrom?: string[];
+  fromNumber: string;
+  webhookUrl: string;
 }
+
+interface ResolvedTwilioAccount {
+  accountId: string;
+  name: string;
+  enabled: boolean;
+  config: TwilioWhatsAppConfig;
+  accountSid: string;
+  authToken: string;
+}
+
+function resolveAccount(cfg: any, accountId?: string): ResolvedTwilioAccount | null {
+  const channelCfg = cfg?.channels?.['twilio-whatsapp'] as TwilioWhatsAppConfig | undefined;
+  if (!channelCfg?.enabled) return null;
+
+  const accountSid = process.env.TWILIO_ACCOUNT_SID || '';
+  const authToken = process.env.TWILIO_AUTH_TOKEN || '';
+  if (!accountSid || !authToken) return null;
+
+  return {
+    accountId: accountId || 'default',
+    name: 'Twilio WhatsApp',
+    enabled: channelCfg.enabled,
+    config: channelCfg,
+    accountSid,
+    authToken,
+  };
+}
+
+const twilioWhatsAppSecurity = createRestrictSendersChannelSecurity<ResolvedTwilioAccount>({
+  channelKey: 'twilio-whatsapp',
+  resolveDmPolicy: (account) => account.config.dmPolicy,
+  resolveDmAllowFrom: (account) => account.config.allowFrom,
+  surface: 'Twilio WhatsApp',
+  openScope: 'anyone with the bot number',
+  policyPathSuffix: 'dmPolicy',
+  mentionGated: false,
+  approveHint: 'Add the phone number to channels.twilio-whatsapp.allowFrom',
+  normalizeDmEntry: (raw) => raw.replace(/^whatsapp:/i, '').replace(/^\+?/, '+'),
+});
+
+export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccount>({
+  base: {
+    id: 'twilio-whatsapp',
+    resolveAccount: ({ cfg, accountId }) => resolveAccount(cfg, accountId),
+    security: twilioWhatsAppSecurity,
+    messaging: {
+      normalizeTarget: (target) => {
+        const trimmed = target.trim();
+        if (!trimmed) return undefined;
+        return fromWhatsAppId(trimmed);
+      },
+      targetResolver: {
+        looksLikeId: (id) => {
+          const trimmed = id?.trim();
+          if (!trimmed) return false;
+          return /^\+?\d{7,15}$/.test(trimmed) || /^whatsapp:\+?\d+$/.test(trimmed);
+        },
+        hint: '<phone number in E.164 format>',
+      },
+    },
+    setup: {
+      resolveChannelSetupStatus: ({ cfg }) => {
+        const channelCfg = cfg?.channels?.['twilio-whatsapp'] as TwilioWhatsAppConfig | undefined;
+        const accountSid = process.env.TWILIO_ACCOUNT_SID || '';
+        const authToken = process.env.TWILIO_AUTH_TOKEN || '';
+
+        if (!channelCfg?.enabled) return { status: 'not-configured' };
+        if (!accountSid || !authToken) return { status: 'not-configured', hint: 'Set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN' };
+        if (!channelCfg.fromNumber) return { status: 'not-configured', hint: 'Set channels.twilio-whatsapp.fromNumber' };
+        if (!channelCfg.webhookUrl) return { status: 'not-configured', hint: 'Set channels.twilio-whatsapp.webhookUrl' };
+        return { status: 'configured' };
+      },
+    },
+    status: {
+      resolveAccountStatus: async ({ account }) => ({
+        accountId: account.accountId,
+        name: account.name,
+        enabled: account.enabled,
+        configured: true,
+        extra: {
+          dmPolicy: account.config.dmPolicy,
+          allowFrom: account.config.allowFrom,
+        },
+      }),
+      resolveAccountState: ({ configured }) => configured ? 'ready' : 'not configured',
+    },
+    gateway: {
+      startAccount: async (ctx) => {
+        const account = ctx.account;
+        const { accountSid, authToken } = account;
+        const { fromNumber, webhookUrl, allowFrom: allowFromList } = account.config;
+
+        const mediaBase = path.join(os.homedir(), '.openclaw', 'media', 'twilio-whatsapp');
+        const inboundDir = path.join(mediaBase, 'inbound');
+        const outboundDir = path.join(mediaBase, 'outbound');
+        fs.mkdirSync(inboundDir, { recursive: true });
+        fs.mkdirSync(outboundDir, { recursive: true });
+
+        const allowFrom = new Set((allowFromList || []).map((p) => p.replace(/^\+?/, '+')));
+
+        const dispatch = (msg: InboundMessage) => {
+          ctx.runtime.dispatchInboundMessage({
+            Body: msg.text,
+            From: msg.senderId,
+            SenderId: msg.senderId,
+            SenderName: msg.senderName,
+            ChatType: 'direct',
+            MessageSid: msg.messageSid,
+            MediaPath: msg.mediaPath,
+            MediaPaths: msg.mediaPaths,
+            Provider: 'twilio-whatsapp',
+          });
+        };
+
+        ctx.runtime.registerHttpRoute({
+          path: '/webhook/twilio-whatsapp',
+          auth: 'plugin',
+          match: 'exact',
+          handler: createWebhookHandler(
+            { accountSid, authToken, fromNumber: toWhatsAppId(fromNumber), webhookUrl, allowFrom, inboundDir },
+            dispatch,
+          ),
+        });
+
+        ctx.runtime.registerHttpRoute({
+          path: '/webhook/twilio-whatsapp/media',
+          auth: 'plugin',
+          match: 'prefix',
+          handler: createMediaServeHandler(outboundDir),
+        });
+
+        ctx.runtime.registerHttpRoute({
+          path: '/webhook/twilio-whatsapp/health',
+          auth: 'plugin',
+          match: 'exact',
+          handler: createHealthHandler(),
+        });
+
+        ctx.log?.info(`[${account.accountId}] Twilio WhatsApp channel started (from: ${fromNumber})`);
+
+        return () => {
+          ctx.log?.info(`[${account.accountId}] Twilio WhatsApp channel stopped`);
+        };
+      },
+    },
+    agentPrompt: {
+      messageToolHints: () => [
+        '',
+        'The user is on WhatsApp. Use WhatsApp formatting only: *bold*, _italic_, ~strikethrough~, ```monospace```.',
+        'No markdown headers, links, or HTML. Use • for bullet points.',
+        'Keep responses concise — messages over 1600 characters are split.',
+      ],
+    },
+  },
+  outbound: {
+    deliveryMode: 'gateway',
+    textChunkLimit: TWILIO_MAX_MESSAGE_LEN,
+    chunker: chunkText,
+    ...createAttachedChannelResultAdapter({
+      channel: 'twilio-whatsapp',
+      sendText: async ({ cfg, to, text }) => {
+        const channelCfg = cfg?.channels?.['twilio-whatsapp'] as TwilioWhatsAppConfig | undefined;
+        if (!channelCfg) throw new Error('Twilio WhatsApp channel not configured');
+
+        const accountSid = process.env.TWILIO_ACCOUNT_SID || '';
+        const authToken = process.env.TWILIO_AUTH_TOKEN || '';
+        if (!accountSid || !authToken) throw new Error('Twilio credentials not set');
+
+        const client = twilio(accountSid, authToken);
+        const result = await client.messages.create({
+          from: toWhatsAppId(channelCfg.fromNumber),
+          to: toWhatsAppId(to),
+          body: text || '',
+        });
+        return { messageId: result.sid };
+      },
+      sendMedia: async ({ cfg, to, text, mediaUrl }) => {
+        const channelCfg = cfg?.channels?.['twilio-whatsapp'] as TwilioWhatsAppConfig | undefined;
+        if (!channelCfg) throw new Error('Twilio WhatsApp channel not configured');
+
+        const accountSid = process.env.TWILIO_ACCOUNT_SID || '';
+        const authToken = process.env.TWILIO_AUTH_TOKEN || '';
+        if (!accountSid || !authToken) throw new Error('Twilio credentials not set');
+
+        const client = twilio(accountSid, authToken);
+        const from = toWhatsAppId(channelCfg.fromNumber);
+        const toWa = toWhatsAppId(to);
+
+        let stagedUrl: string | null = null;
+        if (mediaUrl) {
+          const outboundDir = path.join(os.homedir(), '.openclaw', 'media', 'twilio-whatsapp', 'outbound');
+          stagedUrl = stageMedia(mediaUrl, outboundDir, channelCfg.webhookUrl);
+        }
+
+        const result = await client.messages.create({
+          from,
+          to: toWa,
+          body: text || '',
+          ...(stagedUrl ? { mediaUrl: [stagedUrl] } : {}),
+        });
+        return { messageId: result.sid };
+      },
+    }),
+    resolveTarget: ({ to }: { to?: string }) => {
+      const normalized = to?.trim();
+      if (!normalized) return { ok: false, error: new Error('No target specified') };
+      return { ok: true, to: fromWhatsAppId(normalized) };
+    },
+  },
+});
