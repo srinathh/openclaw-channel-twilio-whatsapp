@@ -5,7 +5,7 @@ declare module 'openclaw/plugin-sdk/channel-core' {
     description?: string;
     plugin: any;
     configSchema?: any;
-    setRuntime?: any;
+    setRuntime?: (runtime: any) => void;
     registerCliMetadata?: any;
     registerFull?: any;
   }): any;
@@ -36,6 +36,7 @@ declare module 'openclaw/plugin-sdk/channel-core' {
           account: TAccount;
           cfg: any;
           runtime: any;
+          channelRuntime?: any;
           abortSignal?: AbortSignal;
           log?: { info: (msg: string) => void; debug?: (msg: string) => void; error?: (msg: string) => void };
           accountId: string;
@@ -108,4 +109,61 @@ declare module 'openclaw/plugin-sdk/channel-send-result' {
 
 declare module 'openclaw/plugin-sdk/reply-chunking' {
   export function chunkText(text: string, limit: number, ctx?: any): string[];
+}
+
+declare module 'openclaw/plugin-sdk/webhook-ingress' {
+  export function registerPluginHttpRoute(params: {
+    path: string;
+    auth: string;
+    match?: string;
+    replaceExisting?: boolean;
+    pluginId: string;
+    accountId?: string;
+    log?: (msg: string) => void;
+    handler: (req: import('http').IncomingMessage, res: import('http').ServerResponse) => void | Promise<void>;
+  }): () => void;
+
+  export function normalizePluginHttpPath(path: string | undefined, fallback: string): string | null;
+}
+
+declare module 'openclaw/plugin-sdk/runtime-store' {
+  export function createPluginRuntimeStore(options: {
+    pluginId: string;
+    errorMessage: string;
+  }): {
+    setRuntime: (runtime: any) => void;
+    clearRuntime: () => void;
+    tryGetRuntime: () => any;
+    getRuntime: () => any;
+  };
+}
+
+declare module 'openclaw/plugin-sdk/channel-inbound' {
+  export function dispatchInboundDirectDmWithRuntime(params: {
+    cfg: any;
+    channel: string;
+    accountId: string;
+    peer: { kind: string; id: string };
+    runtime: any;
+    channelLabel: string;
+    conversationLabel: string;
+    rawBody: string;
+    bodyForAgent?: string;
+    commandBody?: string;
+    senderAddress: string;
+    recipientAddress: string;
+    senderId: string;
+    messageId: string;
+    provider?: string;
+    surface?: string;
+    timestamp?: number;
+    commandAuthorized?: boolean;
+    originatingChannel?: string;
+    originatingTo?: string;
+    extraContext?: Record<string, any>;
+    deliver: (payload: any, info?: any) => Promise<any>;
+    onRecordError?: (err: any) => void;
+    onDispatchError?: (err: any) => void;
+    replyOptions?: any;
+  }): Promise<{ route: any; storePath: string; ctxPayload: any }>;
 }

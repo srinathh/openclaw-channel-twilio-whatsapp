@@ -1,37 +1,232 @@
 # OpenClaw Twilio WhatsApp Channel
 
-This repository contains the `TwilioWhatsAppChannel` plugin, serving as a communication interface connecting the **OpenClaw AI agent** to users via WhatsApp using the **Twilio API**. It handles sending outgoing messages, processing incoming messages (from Webhooks), and securely routing media between the two platforms.
+A channel plugin for [OpenClaw](https://openclaw.rocks) that connects your AI agent to WhatsApp via the [Twilio Business API](https://www.twilio.com/docs/whatsapp).
 
-## Architecture & How It Works
+[![npm version](https://img.shields.io/npm/v/@srinathh/openclaw-channel-twilio-whatsapp.svg)](https://www.npmjs.com/package/@srinathh/openclaw-channel-twilio-whatsapp)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-### 1. Initialization and Configuration
-When the channel is instantiated, it configures itself using the environment variables and OpenClaw's context:
-- **Environment Variables:** Loads setup credentials specific to Twilio (`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_WHATSAPP_FROM`, `TWILIO_WEBHOOK_URL`).
-- **Access Control:** Loads an `OPENCLAW_ALLOWED_SENDERS` list to restrict who the agent is permitted to talk to.
-- **Persistent Data Layers:** Resolves paths and ensures the existence of `outbound` and `inbound` directories on the disk to store media files.
-- **Webhook Registration:** Registers two HTTP routes on the OpenClaw API:
-  - `POST /webhook/twilio-whatsapp` to receive incoming WhatsApp messages.
-  - `GET /webhook/twilio-whatsapp/media/:filename` to serve local media files securely to Twilio so it can forward them.
+## Why Twilio over Baileys?
 
-### 2. Sending Outbound Messages 
-Handled by the `send()` method when the AI agent intends to send a message to the user:
-- **Media Staging:** If the AI attaches local `mediaFiles`, they are copied to the `outbound` directory and exposed via generated static URLs configuring the `GET /webhook/twilio-whatsapp/media/:filename` endpoint.
-- **Message Chunking:** Twilio restricts messages to 1600 characters. If the generated AI response is longer than that limit, the script divides the sequence into multiple sequentially sent WhatsApp messages automatically.
-- **Execution:** Dispatches the final text/media via the official `twilio` Node SDK.
+OpenClaw ships with a built-in WhatsApp channel based on [Baileys](https://github.com/WhiskeySockets/Baileys), which reverse-engineers the WhatsApp Web protocol. Baileys is convenient — no business verification, no monthly fees — but the trade-offs are real:
 
-### 3. Handling Incoming Messages
-Handled by the Webhook endpoint `handleWebhook` when a user replies via WhatsApp.
-- **Validation:** Fetches the raw request body buffer and verifies the Twilio cryptographical signature (`x-twilio-signature`) utilizing your auth token. This ensures requests are genuinely originating from Twilio and not an external spoofer.
-- **Access Control:** Evaluates that the user's phone number (`From`) occurs in the `allowedSenders` authorized set. Throws a `403 Forbidden` if they try to interact with the bot without permission.
-- **Media Downloading:** When a user uploads pictures/documents (`NumMedia > 0`), it invokes an underlying stream handler to securely fetch the files from Twilio via basic HTTP auth & redirect-handling protocols. These are written to the local `inbound` directory.
-- **Formatting:** Converts downloaded media elements into a localized text representation mapping (e.g., `[image/jpeg: /path/to/media.jpg]`) embedded sequentially into the chat timeline.
-- **Routing to OpenClaw:** Routes the complete packet (`from`, `text`, and `messageId`) to OpenClaw's core systems, prompting the AI to process the message and orchestrate a response.
+| Concern | Baileys | Twilio (this plugin) |
+|---|---|---|
+| Protocol stability | Breaks when WhatsApp changes their internal protocol | Official, versioned API |
+| Account safety | Risk of bans for "automated" behavior | Compliant Business API |
+| Delivery receipts | Best-effort | First-class status callbacks |
+| Group messaging | Yes | No (1:1 DMs only) |
+| Cost | Free | Per-message fees |
+| Setup | QR-code pairing | Sender registration + webhook |
 
-### 4. Media Serving Endpoint
-Handled by the static file endpoint `serveMedia` to supply files back to Twilio. 
-- Prevents directory traversal attacks (`../`) by locking context paths identically.
-- Extracts extensions to emit native mapped MIME types (`image/jpeg`, `video/mp4`, etc.) before securely piping file contents over the active socket to Twilio's dispatch systems.
+Pick this plugin when you need stability and compliance — for personal automations or when you need group chat, the bundled Baileys channel is simpler.
 
-## Utilities
-- `downloadTwilioMedia`: Overcomes Twilio auth limitations and handles cross-origin webhook redirect chains dynamically securely fetching resources to the agent's disk without heavy third-party REST dependencies.
-- `parseFormBody`: Converts raw node.js Request buffers (`x-www-form-urlencoded`) reliably minimizing the needs for express modules like `body-parser`.
+## Features
+
+- **Inbound webhooks** via OpenClaw's gateway (no separate HTTP server)
+- **Twilio signature validation** on every inbound request
+- **Allowlist enforcement** so only approved phone numbers can talk to your agent
+- **Inbound media download** with redirect-following Basic Auth
+- **Outbound media staging** — local files are served back to Twilio via UUID-randomized URLs
+- **Message chunking** at Twilio's 1600-char limit
+- **WhatsApp formatting hints** injected into the agent prompt (`*bold*`, `_italic_`, etc.)
+- **Fire-and-forget webhook responses** — TwiML returned immediately, processing happens async (avoids Twilio's 15s timeout)
+
+## Installation
+
+This plugin is loaded by OpenClaw at runtime via npm. Add it to your `OpenClawInstance` CRD:
+
+```yaml
+apiVersion: openclaw.rocks/v1alpha1
+kind: OpenClawInstance
+metadata:
+  name: openclaw
+spec:
+  plugins:
+    - "@srinathh/openclaw-channel-twilio-whatsapp@latest"
+```
+
+Or in a non-Kubernetes deployment, install it into your OpenClaw runtime's `node_modules`:
+
+```bash
+npm install @srinathh/openclaw-channel-twilio-whatsapp@latest
+```
+
+Then add it to the `plugins.load.paths` array in `openclaw.json` (see Configuration).
+
+## Configuration
+
+### `openclaw.json`
+
+```json
+{
+  "channels": {
+    "twilio-whatsapp": {
+      "enabled": true,
+      "dmPolicy": "allowlist",
+      "allowFrom": ["+14155551234", "+14155555678"],
+      "fromNumber": "+14155550000",
+      "webhookUrl": "https://your-public-host.example.com"
+    }
+  },
+  "plugins": {
+    "enabled": true,
+    "allow": ["@srinathh/openclaw-channel-twilio-whatsapp"],
+    "load": {
+      "paths": ["~/.openclaw/node_modules/@srinathh/openclaw-channel-twilio-whatsapp"]
+    },
+    "entries": {
+      "@srinathh/openclaw-channel-twilio-whatsapp": { "enabled": true }
+    }
+  }
+}
+```
+
+| Field | Required | Description |
+|---|---|---|
+| `enabled` | yes | Activate the channel |
+| `dmPolicy` | yes | `"allowlist"` (only `allowFrom` numbers) or `"open"` (anyone) |
+| `allowFrom` | when `allowlist` | Phone numbers in E.164 format (e.g. `+14155551234`) |
+| `fromNumber` | yes | Your Twilio WhatsApp sender in E.164 |
+| `webhookUrl` | yes | Public base URL where Twilio can reach OpenClaw — used both for signature validation and media serving |
+
+All phone numbers use **E.164 format without the `whatsapp:` prefix** — the plugin prepends it internally when calling Twilio.
+
+### Environment variables (secrets)
+
+| Variable | Required | Description |
+|---|---|---|
+| `TWILIO_ACCOUNT_SID` | yes | Your Twilio account SID (starts with `AC`) |
+| `TWILIO_AUTH_TOKEN` | yes | Your Twilio auth token |
+
+## Twilio setup
+
+### 1. Get a WhatsApp sender
+
+For development, use the [Twilio Sandbox for WhatsApp](https://console.twilio.com/us1/develop/sms/try-it-out/whatsapp-learn). For production, register a [WhatsApp sender](https://console.twilio.com/us1/develop/sms/senders/whatsapp-senders).
+
+### 2. Configure the inbound webhook
+
+In the Twilio Console for your WhatsApp sender, set:
+
+- **When a message comes in:** `https://<your-host>/webhook/twilio-whatsapp`
+- **Method:** `HTTP POST`
+
+The path is fixed by this plugin. The host must match `webhookUrl` in your OpenClaw config exactly — Twilio's signature validation requires the URL to match.
+
+### 3. Verify the health endpoint
+
+```bash
+curl https://<your-host>/webhook/twilio-whatsapp/health
+# {"status":"ok","channel":"twilio-whatsapp"}
+```
+
+### 4. Send a test message
+
+WhatsApp the number you registered in `fromNumber` from a phone in your `allowFrom` list. The agent should reply.
+
+## Architecture
+
+```
+┌─────────────────┐      POST /webhook/twilio-whatsapp
+│  Twilio API     │ ──────────────────────────────────► ┌──────────────────┐
+│                 │ ◄────────── 200 TwiML <Response/> ── │ OpenClaw gateway │
+└─────────────────┘                                      │  (this plugin)   │
+        ▲                                                └────────┬─────────┘
+        │  client.messages.create({...})                          │ dispatchInboundDirectDmWithRuntime
+        │                                                         ▼
+┌───────┴─────────┐                                       ┌──────────────┐
+│ Outbound:       │ ◄──────────── deliver(payload) ────── │ Agent runtime│
+│ sendText /      │                                       └──────────────┘
+│ sendMedia       │
+└─────────────────┘
+```
+
+### HTTP routes registered
+
+| Path | Auth | Purpose |
+|---|---|---|
+| `POST /webhook/twilio-whatsapp` | `plugin` (signature-validated) | Inbound from Twilio |
+| `GET /webhook/twilio-whatsapp/media/*` | `plugin` | Serves outbound media for Twilio to fetch |
+| `GET /webhook/twilio-whatsapp/health` | `plugin` | Liveness check |
+
+### Media handling
+
+Inbound media (Twilio → agent):
+- Downloaded with redirect-following Basic Auth
+- Saved to `~/.openclaw/media/twilio-whatsapp/inbound/<MessageSid>-<i><ext>`
+- Path included in the `MediaPath` / `MediaPaths` envelope fields
+
+Outbound media (agent → Twilio):
+- Local files are copied to `~/.openclaw/media/twilio-whatsapp/outbound/<uuid><ext>`
+- Served via the media endpoint with parent-directory check (no traversal)
+- Twilio fetches the URL and forwards to WhatsApp
+
+### Inbound flow
+
+1. Twilio POSTs `application/x-www-form-urlencoded` body with `Body`, `From`, `MessageSid`, `NumMedia`, etc.
+2. Plugin validates `X-Twilio-Signature` against `webhookUrl + path` — rejects with `403` on mismatch
+3. Plugin checks `From` against `allowFrom` (with `whatsapp:` prefix stripped) — rejects with `403` if not allowed
+4. Plugin **immediately** responds with empty TwiML (`<Response/>`) so Twilio doesn't time out
+5. Plugin downloads any inbound media (async, after responding)
+6. Plugin calls `dispatchInboundDirectDmWithRuntime` with the message envelope
+7. Agent processes the message and sends a reply via `sendText` / `sendMedia`
+
+## Development
+
+```bash
+git clone https://github.com/srinathh/openclaw-channel-twilio-whatsapp.git
+cd openclaw-channel-twilio-whatsapp
+npm install
+npm run build
+```
+
+### Project layout
+
+```
+src/
+├── index.ts          # defineChannelPluginEntry — plugin entry point
+├── channel.ts        # createChatChannelPlugin — main plugin definition
+├── webhook.ts        # Twilio webhook handler (signature validation + dispatch)
+├── media.ts          # download / stage / serve media
+├── runtime.ts        # createPluginRuntimeStore — runtime accessor for dispatch
+├── util.ts           # phone formatting + form body parsing
+└── openclaw-sdk.d.ts # ambient type declarations for openclaw/plugin-sdk/*
+```
+
+### Testing locally
+
+You'll need an OpenClaw instance running with this plugin installed. The simplest setup:
+
+```bash
+# 1. In one terminal: build and link
+npm run build
+npm link
+
+# 2. In your OpenClaw instance directory
+npm link @srinathh/openclaw-channel-twilio-whatsapp
+
+# 3. Add to your openclaw.json plugins config (see Configuration)
+# 4. Use a tunnel (cloudflared, ngrok) to expose the gateway
+# 5. Point Twilio's webhook at the tunnel URL
+```
+
+## Compatibility
+
+- **OpenClaw**: requires `openclaw >= 2026.3.28` (uses the `plugin-sdk/*` subpath imports)
+- **OpenClaw operator** (k8s): requires v0.30.0+ for the plugin peerDependency symlink
+- **Node.js**: 20+
+
+## Known limitations
+
+- **DMs only** — no group chat (Twilio's WhatsApp Business API doesn't support groups)
+- **No reactions / typing indicators** — Twilio doesn't expose these
+- **No threaded replies** — WhatsApp threading not exposed by Twilio
+- **Single account** — multiple Twilio accounts aren't supported in this version
+
+## License
+
+Apache-2.0 — see [LICENSE](LICENSE).
+
+## Contributing
+
+Issues and PRs welcome at [github.com/srinathh/openclaw-channel-twilio-whatsapp](https://github.com/srinathh/openclaw-channel-twilio-whatsapp).

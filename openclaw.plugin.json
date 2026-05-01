@@ -2,14 +2,77 @@
   "id": "twilio-whatsapp",
   "name": "Twilio WhatsApp Channel",
   "description": "WhatsApp channel via Twilio Business API",
-  "version": "2.0.1",
+  "version": "2.0.7",
   "channels": ["twilio-whatsapp"],
   "channelEnvVars": {
     "twilio-whatsapp": ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"]
   },
   "configSchema": {
     "type": "object",
-    "additionalProperties": true,
+    "additionalProperties": false,
     "properties": {}
+  },
+  "channelConfigs": {
+    "twilio-whatsapp": {
+      "schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Activate the Twilio WhatsApp channel."
+          },
+          "dmPolicy": {
+            "type": "string",
+            "enum": ["allowlist", "open"],
+            "default": "allowlist",
+            "description": "Restrict who can DM the agent. 'allowlist' requires phone numbers in allowFrom; 'open' lets anyone with the bot number talk."
+          },
+          "allowFrom": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^\\+[1-9]\\d{1,14}$"
+            },
+            "description": "Phone numbers in E.164 format (e.g. +14155551234) allowed to DM the agent when dmPolicy is 'allowlist'."
+          },
+          "fromNumber": {
+            "type": "string",
+            "pattern": "^\\+[1-9]\\d{1,14}$",
+            "description": "Twilio WhatsApp sender number in E.164 format."
+          },
+          "webhookUrl": {
+            "type": "string",
+            "format": "uri",
+            "description": "Public base URL where Twilio reaches OpenClaw — used for signature validation and outbound media serving."
+          }
+        },
+        "required": ["enabled", "fromNumber", "webhookUrl"]
+      }
+    }
+  },
+  "uiHints": {
+    "enabled": {
+      "label": "Enabled"
+    },
+    "dmPolicy": {
+      "label": "DM Policy",
+      "help": "Who can talk to the agent. Use allowlist for personal use."
+    },
+    "allowFrom": {
+      "label": "Allowed Senders",
+      "help": "Phone numbers in E.164 format (+14155551234)"
+    },
+    "fromNumber": {
+      "label": "Twilio Sender Number",
+      "placeholder": "+14155550000"
+    },
+    "webhookUrl": {
+      "label": "Public Webhook URL",
+      "placeholder": "https://your-host.example.com",
+      "help": "Twilio will POST inbound messages to {webhookUrl}/webhook/twilio-whatsapp. Must be HTTPS and publicly reachable."
+    }
   }
 }

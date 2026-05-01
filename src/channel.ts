@@ -6,6 +6,9 @@ import { createChatChannelPlugin } from 'openclaw/plugin-sdk/channel-core';
 import { createRestrictSendersChannelSecurity } from 'openclaw/plugin-sdk/channel-policy';
 import { createAttachedChannelResultAdapter } from 'openclaw/plugin-sdk/channel-send-result';
 import { chunkText } from 'openclaw/plugin-sdk/reply-chunking';
+import { registerPluginHttpRoute } from 'openclaw/plugin-sdk/webhook-ingress';
+import { dispatchInboundDirectDmWithRuntime } from 'openclaw/plugin-sdk/channel-inbound';
+import { getTwilioWhatsAppRuntime } from './runtime.js';
 import { toWhatsAppId, fromWhatsAppId } from './util.js';
 import { stageMedia, createMediaServeHandler } from './media.js';
 import { createWebhookHandler, createHealthHandler, type InboundMessage } from './webhook.js';
@@ -62,6 +65,13 @@ const twilioWhatsAppSecurity = createRestrictSendersChannelSecurity<ResolvedTwil
 export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccount>({
   base: {
     id: 'twilio-whatsapp',
+    config: {
+      listAccountIds: () => ['default'],
+      resolveAccount: (cfg: any, accountId?: string) => resolveAccount(cfg, accountId),
+      defaultAccountId: () => 'default',
+      setAccountEnabled: ({ cfg }: { cfg: any; accountId: string; enabled: boolean }) => cfg,
+      deleteAccount: ({ cfg }: { cfg: any; accountId: string }) => cfg,
+    },
     resolveAccount: ({ cfg, accountId }) => resolveAccount(cfg, accountId),
     security: twilioWhatsAppSecurity,
     messaging: {
@@ -117,51 +127,85 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
         fs.mkdirSync(inboundDir, { recursive: true });
         fs.mkdirSync(outboundDir, { recursive: true });
 
-        const allowFrom = new Set((allowFromList || []).map((p) => p.replace(/^\+?/, '+')));
+        const allowFrom = new Set((allowFromList || []).map((p: string) => p.replace(/^\+?/, '+')));
 
-        const dispatch = (msg: InboundMessage) => {
-          ctx.runtime.dispatchInboundMessage({
-            Body: msg.text,
-            From: msg.senderId,
-            SenderId: msg.senderId,
-            SenderName: msg.senderName,
-            ChatType: 'direct',
-            MessageSid: msg.messageSid,
-            MediaPath: msg.mediaPath,
-            MediaPaths: msg.mediaPaths,
-            Provider: 'twilio-whatsapp',
+        const dispatch = async (msg: InboundMessage) => {
+          const sendTwilioReply = async (text: string) => {
+            const client = twilio(accountSid, authToken);
+            const result = await client.messages.create({
+              from: toWhatsAppId(fromNumber),
+              to: toWhatsAppId(msg.senderId),
+              body: text,
+            });
+            return { messageId: result.sid };
+          };
+
+          await dispatchInboundDirectDmWithRuntime({
+            cfg: ctx.cfg,
+            channel: 'twilio-whatsapp',
+            accountId: account.accountId,
+            peer: { kind: 'direct', id: msg.senderId },
+            runtime: getTwilioWhatsAppRuntime(),
+            channelLabel: 'Twilio WhatsApp',
+            conversationLabel: msg.senderName || msg.senderId,
+            rawBody: msg.text,
+            senderAddress: msg.senderId,
+            recipientAddress: toWhatsAppId(fromNumber),
+            senderId: msg.senderId,
+            messageId: msg.messageSid,
+            provider: 'twilio-whatsapp',
+            surface: 'twilio-whatsapp',
+            deliver: async (payload) => {
+              if (payload.text) {
+                return sendTwilioReply(payload.text);
+              }
+              return {};
+            },
           });
         };
 
-        ctx.runtime.registerHttpRoute({
+        const unregisterWebhook = registerPluginHttpRoute({
           path: '/webhook/twilio-whatsapp',
           auth: 'plugin',
-          match: 'exact',
+          replaceExisting: true,
+          pluginId: 'twilio-whatsapp',
+          accountId: account.accountId,
           handler: createWebhookHandler(
             { accountSid, authToken, fromNumber: toWhatsAppId(fromNumber), webhookUrl, allowFrom, inboundDir },
             dispatch,
           ),
         });
 
-        ctx.runtime.registerHttpRoute({
+        const unregisterMedia = registerPluginHttpRoute({
           path: '/webhook/twilio-whatsapp/media',
           auth: 'plugin',
-          match: 'prefix',
+          replaceExisting: true,
+          pluginId: 'twilio-whatsapp',
+          accountId: account.accountId,
           handler: createMediaServeHandler(outboundDir),
         });
 
-        ctx.runtime.registerHttpRoute({
+        const unregisterHealth = registerPluginHttpRoute({
           path: '/webhook/twilio-whatsapp/health',
           auth: 'plugin',
-          match: 'exact',
+          replaceExisting: true,
+          pluginId: 'twilio-whatsapp',
+          accountId: account.accountId,
           handler: createHealthHandler(),
         });
 
         ctx.log?.info(`[${account.accountId}] Twilio WhatsApp channel started (from: ${fromNumber})`);
 
-        return () => {
-          ctx.log?.info(`[${account.accountId}] Twilio WhatsApp channel stopped`);
-        };
+        if (ctx.abortSignal && !ctx.abortSignal.aborted) {
+          await new Promise<void>((resolve) => {
+            ctx.abortSignal!.addEventListener('abort', () => resolve(), { once: true });
+          });
+        }
+
+        unregisterWebhook();
+        unregisterMedia();
+        unregisterHealth();
+        ctx.log?.info(`[${account.accountId}] Twilio WhatsApp channel stopped`);
       },
     },
     agentPrompt: {
