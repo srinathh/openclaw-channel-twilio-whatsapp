@@ -9,6 +9,7 @@ A channel plugin for [OpenClaw](https://openclaw.rocks) that connects your AI ag
 
 [![npm version](https://img.shields.io/npm/v/@srinathh/openclaw-channel-twilio-whatsapp.svg)](https://www.npmjs.com/package/@srinathh/openclaw-channel-twilio-whatsapp)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![NHS Agentic Readiness](https://nothumansearch.ai/badge/xquik.com.svg)](https://nothumansearch.ai/site/xquik.com)
 
 ## Why Twilio over Baileys?
 
@@ -193,6 +194,18 @@ npm link @srinathh/openclaw-channel-twilio-whatsapp
 - **No reactions / typing indicators** — Twilio doesn't expose these
 - **No threaded replies** — WhatsApp threading not exposed by Twilio
 - **Single account** — multiple Twilio accounts aren't supported in this version
+
+## Companion X/Twitter workflows
+
+This plugin keeps OpenClaw reachable through compliant WhatsApp Business DMs. When the same assistant needs public X/Twitter workflows, install [TweetClaw](https://github.com/Xquik-dev/tweetclaw) beside this channel:
+
+```bash
+openclaw plugins install @xquik/tweetclaw
+```
+
+TweetClaw is also published on [npm](https://www.npmjs.com/package/@xquik/tweetclaw) and [ClawHub](https://clawhub.openclaw.ai/packages/@xquik/tweetclaw). It gives OpenClaw agents structured workflows for tweet search, reply search, follower export, user lookup, media upload and download, direct messages, tweet monitors, webhooks, giveaway draws, and approval-gated post tweets or post tweet replies.
+
+Keep Twilio WhatsApp credentials separate from TweetClaw and Xquik credentials. Use `dmPolicy: "allowlist"` for WhatsApp senders, and require OpenClaw approval before posting, replying, direct messaging, following, or unfollowing on X/Twitter.
 
 ## License
 
