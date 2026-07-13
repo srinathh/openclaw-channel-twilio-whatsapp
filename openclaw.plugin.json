@@ -58,6 +58,27 @@
             "enum": ["length", "newline"],
             "default": "length",
             "description": "Split long replies on length, or prefer paragraph boundaries."
+          },
+          "transcribeVoice": {
+            "type": "boolean",
+            "default": true,
+            "description": "Transcribe inbound voice notes to text (needs a transcription API key). OpenClaw's direct-DM path can't carry media to core media-understanding, so audio is transcribed in the webhook and injected as text."
+          },
+          "transcribeModel": {
+            "type": "string",
+            "default": "openai/whisper-large-v3-turbo",
+            "description": "Model for the /audio/transcriptions endpoint."
+          },
+          "transcribeBaseUrl": {
+            "type": "string",
+            "format": "uri",
+            "default": "https://openrouter.ai/api/v1",
+            "description": "OpenAI-compatible base URL for transcription."
+          },
+          "transcribeApiKeyEnv": {
+            "type": "string",
+            "default": "OPENROUTER_API_KEY",
+            "description": "Name of the environment variable holding the transcription API key. Kept out of config so no secret is stored in plaintext."
           }
         },
         "required": ["enabled", "fromNumber", "webhookUrl"]

@@ -24,6 +24,14 @@ interface TwilioWhatsAppConfig {
   allowFrom?: string[];
   fromNumber: string;
   webhookUrl: string;
+  /** Transcribe inbound voice notes to text (default: true when a key is present). */
+  transcribeVoice?: boolean;
+  /** Transcription model for the /audio/transcriptions endpoint. Default openai/whisper-large-v3-turbo. */
+  transcribeModel?: string;
+  /** OpenAI-compatible base URL. Default https://openrouter.ai/api/v1. */
+  transcribeBaseUrl?: string;
+  /** Env var name holding the transcription API key. Default OPENROUTER_API_KEY. */
+  transcribeApiKeyEnv?: string;
 }
 
 interface ResolvedTwilioAccount {
@@ -185,6 +193,12 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
         const { accountSid, authToken } = account;
         const { fromNumber, webhookUrl, allowFrom: allowFromList } = account.config;
 
+        // Voice-note transcription config. Key comes from an env var (default
+        // OPENROUTER_API_KEY) so it is never stored in plaintext config.
+        const transcribeApiKeyEnv = account.config.transcribeApiKeyEnv || 'OPENROUTER_API_KEY';
+        const transcribeApiKey = process.env[transcribeApiKeyEnv] || '';
+        const transcribeVoice = account.config.transcribeVoice !== false && !!transcribeApiKey;
+
         // Use the SDK's resolveStateDir() — it honors OPENCLAW_STATE_DIR and
         // falls back to ~/.openclaw. os.homedir() is wrong in containers where
         // $HOME doesn't match the workspace owner (EACCES on mkdir), and the
@@ -312,7 +326,18 @@ export const twilioWhatsAppPlugin = createChatChannelPlugin<ResolvedTwilioAccoun
           pluginId: 'twilio-whatsapp',
           accountId: account.accountId,
           handler: createWebhookHandler(
-            { accountSid, authToken, fromNumber: toWhatsAppId(fromNumber), webhookUrl, allowFrom, inboundDir },
+            {
+              accountSid,
+              authToken,
+              fromNumber: toWhatsAppId(fromNumber),
+              webhookUrl,
+              allowFrom,
+              inboundDir,
+              transcribeVoice,
+              transcribeModel: account.config.transcribeModel,
+              transcribeBaseUrl: account.config.transcribeBaseUrl,
+              transcribeApiKey,
+            },
             dispatch,
           ),
         });
