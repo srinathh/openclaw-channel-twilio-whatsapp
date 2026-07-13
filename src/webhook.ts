@@ -12,6 +12,44 @@ export interface WebhookConfig {
   webhookUrl: string;
   allowFrom: Set<string>;
   inboundDir: string;
+  /**
+   * Voice-note transcription. OpenClaw's direct-DM dispatch path does not carry
+   * structured media attachments to the core media-understanding pipeline, so
+   * inbound audio would otherwise reach the agent only as an opaque file path
+   * (which it typically routes to the image tool → "Unsupported media type: audio").
+   * When an API key is available we transcribe audio here and inject the text.
+   */
+  transcribeVoice?: boolean;
+  transcribeModel?: string;
+  transcribeBaseUrl?: string;
+  transcribeApiKey?: string;
+}
+
+/**
+ * Transcribe inbound audio via an OpenAI-compatible `/audio/transcriptions` endpoint
+ * (OpenRouter Whisper by default). Returns the transcript, or null on any failure.
+ */
+async function transcribeAudio(
+  buffer: Buffer,
+  contentType: string,
+  opts: { model: string; baseUrl: string; apiKey: string },
+): Promise<string | null> {
+  const format = (contentType.split('/')[1] || 'ogg').split(';')[0] || 'ogg';
+  try {
+    const res = await fetch(`${opts.baseUrl.replace(/\/$/, '')}/audio/transcriptions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${opts.apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: opts.model,
+        input_audio: { data: buffer.toString('base64'), format },
+      }),
+    });
+    if (!res.ok) return null;
+    const j = (await res.json()) as { text?: string };
+    return (j.text || '').trim() || null;
+  } catch {
+    return null;
+  }
 }
 
 export interface InboundMessage {
@@ -74,7 +112,18 @@ export function createWebhookHandler(config: WebhookConfig, dispatch: DispatchFn
               const filePath = path.join(config.inboundDir, `${messageSid}-${i}${ext}`);
               fs.writeFileSync(filePath, buffer);
               mediaPaths.push(filePath);
-              content += `\n[${contentType}: ${filePath}]`;
+              if (config.transcribeVoice && config.transcribeApiKey && contentType.startsWith('audio/')) {
+                const transcript = await transcribeAudio(buffer, contentType, {
+                  model: config.transcribeModel || 'openai/whisper-large-v3-turbo',
+                  baseUrl: config.transcribeBaseUrl || 'https://openrouter.ai/api/v1',
+                  apiKey: config.transcribeApiKey,
+                });
+                content += transcript
+                  ? `\n[Voice message]: ${transcript}`
+                  : `\n[${contentType}: ${filePath}]`;
+              } else {
+                content += `\n[${contentType}: ${filePath}]`;
+              }
             } catch {
               content += `\n[media: ${contentType} (download failed)]`;
             }
